@@ -1,0 +1,7 @@
+show
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe

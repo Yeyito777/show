@@ -1,0 +1,5 @@
+#compdef show
+
+_arguments \
+  '1:file:_files' \
+  '*:: :_nothing'
