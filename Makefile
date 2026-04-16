@@ -4,7 +4,7 @@ ZSHDIR   ?= $(PREFIX)/share/zsh/site-functions
 
 CC       ?= gcc
 CFLAGS   ?= -O2 -Wall -Wextra
-PKG_DEPS  = sdl2 SDL2_image x11
+PKG_DEPS  = sdl2 SDL2_image x11 cairo poppler-glib
 
 PKG_CFLAGS := $(shell pkg-config --cflags $(PKG_DEPS))
 PKG_LIBS   := $(shell pkg-config --libs   $(PKG_DEPS))
