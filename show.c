@@ -26,11 +26,11 @@ typedef struct {
     int page_count;
     int page_index;
     SDL_Texture *texture;
-    int content_w;
-    int content_h;
+    int base_w;
+    int base_h;
     int rendered_page;
-    int rendered_out_w;
-    int rendered_out_h;
+    int rendered_w;
+    int rendered_h;
 } Content;
 
 static void die(const char *msg)
@@ -53,44 +53,10 @@ static void set_wm_class(SDL_Window *window, const char *name)
     XFlush(info.info.x11.display);
 }
 
-static SDL_Rect fit_rect(int src_w, int src_h, int dst_w, int dst_h)
-{
-    double scale_w = (double)dst_w / (double)src_w;
-    double scale_h = (double)dst_h / (double)src_h;
-    double scale = scale_w < scale_h ? scale_w : scale_h;
-
-    int w = (int)(src_w * scale + 0.5);
-    int h = (int)(src_h * scale + 0.5);
-
-    SDL_Rect rect = {
-        .x = (dst_w - w) / 2,
-        .y = (dst_h - h) / 2,
-        .w = w,
-        .h = h,
-    };
-    return rect;
-}
-
 static bool has_pdf_extension(const char *path)
 {
     const char *dot = strrchr(path, '.');
     return dot && strcasecmp(dot, ".pdf") == 0;
-}
-
-static void get_pdf_page_size(PopplerDocument *doc, int page_index, int *w, int *h)
-{
-    PopplerPage *page = poppler_document_get_page(doc, page_index);
-    if (!page)
-        die("cannot open PDF page");
-
-    double pw, ph;
-    poppler_page_get_size(page, &pw, &ph);
-    g_object_unref(page);
-
-    *w = (int)(pw + 0.5);
-    *h = (int)(ph + 0.5);
-    if (*w < 1) *w = 1;
-    if (*h < 1) *h = 1;
 }
 
 static void destroy_texture(Content *content)
@@ -108,6 +74,22 @@ static void destroy_content(Content *content)
         SDL_FreeSurface(content->image_surface);
     if (content->pdf_doc)
         g_object_unref(content->pdf_doc);
+}
+
+static void get_pdf_page_size(PopplerDocument *doc, int page_index, int *w, int *h)
+{
+    PopplerPage *page = poppler_document_get_page(doc, page_index);
+    if (!page)
+        die("cannot open PDF page");
+
+    double pw, ph;
+    poppler_page_get_size(page, &pw, &ph);
+    g_object_unref(page);
+
+    *w = (int)(pw + 0.5);
+    *h = (int)(ph + 0.5);
+    if (*w < 1) *w = 1;
+    if (*h < 1) *h = 1;
 }
 
 static PopplerDocument *open_pdf_document(const char *path)
@@ -134,20 +116,20 @@ static PopplerDocument *open_pdf_document(const char *path)
     return doc;
 }
 
-static bool load_content(const char *path, Content *content)
+static void load_content(const char *path, Content *content)
 {
     memset(content, 0, sizeof(*content));
     content->rendered_page = -1;
-    content->rendered_out_w = -1;
-    content->rendered_out_h = -1;
+    content->rendered_w = -1;
+    content->rendered_h = -1;
 
     if (!has_pdf_extension(path)) {
         content->image_surface = IMG_Load(path);
         if (content->image_surface) {
             content->kind = CONTENT_IMAGE;
-            content->content_w = content->image_surface->w;
-            content->content_h = content->image_surface->h;
-            return true;
+            content->base_w = content->image_surface->w;
+            content->base_h = content->image_surface->h;
+            return;
         }
     }
 
@@ -159,14 +141,13 @@ static bool load_content(const char *path, Content *content)
             die("PDF has no pages");
         content->page_index = 0;
         get_pdf_page_size(content->pdf_doc, content->page_index,
-                          &content->content_w, &content->content_h);
-        return true;
+                          &content->base_w, &content->base_h);
+        return;
     }
 
     if (has_pdf_extension(path))
         die("cannot open PDF");
     die(IMG_GetError());
-    return false;
 }
 
 static void update_window_title(SDL_Window *window, const Content *content, const char *path)
@@ -181,29 +162,64 @@ static void update_window_title(SDL_Window *window, const Content *content, cons
     } else {
         snprintf(title, sizeof(title), "show - %s", base);
     }
+
     SDL_SetWindowTitle(window, title);
+}
+
+static void compute_display_size(const Content *content,
+                                 int out_w,
+                                 int out_h,
+                                 double zoom,
+                                 int *display_w,
+                                 int *display_h)
+{
+    double fit_w = (double)out_w / (double)content->base_w;
+    double fit_h = (double)out_h / (double)content->base_h;
+    double fit = fit_w < fit_h ? fit_w : fit_h;
+
+    if (fit <= 0.0)
+        fit = 1.0;
+
+    double scaled_w = (double)content->base_w * fit * zoom;
+    double scaled_h = (double)content->base_h * fit * zoom;
+
+    *display_w = (int)(scaled_w + 0.5);
+    *display_h = (int)(scaled_h + 0.5);
+    if (*display_w < 1) *display_w = 1;
+    if (*display_h < 1) *display_h = 1;
+}
+
+static void clamp_pan(int out_w, int out_h, int display_w, int display_h,
+                      double *pan_x, double *pan_y)
+{
+    double max_x = display_w > out_w ? (double)(display_w - out_w) / 2.0 : 0.0;
+    double max_y = display_h > out_h ? (double)(display_h - out_h) / 2.0 : 0.0;
+
+    if (*pan_x > max_x) *pan_x = max_x;
+    if (*pan_x < -max_x) *pan_x = -max_x;
+    if (*pan_y > max_y) *pan_y = max_y;
+    if (*pan_y < -max_y) *pan_y = -max_y;
 }
 
 static void create_image_texture(Content *content, SDL_Renderer *renderer)
 {
-    destroy_texture(content);
+    if (content->texture)
+        return;
+
     content->texture = SDL_CreateTextureFromSurface(renderer, content->image_surface);
     if (!content->texture)
         die(SDL_GetError());
-    content->rendered_out_w = content->content_w;
-    content->rendered_out_h = content->content_h;
-    content->rendered_page = -1;
 }
 
-static void render_pdf_page(Content *content, SDL_Renderer *renderer, int out_w, int out_h)
+static void render_pdf_page(Content *content, SDL_Renderer *renderer, int render_w, int render_h)
 {
-    if (out_w < 1) out_w = 1;
-    if (out_h < 1) out_h = 1;
+    if (render_w < 1) render_w = 1;
+    if (render_h < 1) render_h = 1;
 
     if (content->texture &&
         content->rendered_page == content->page_index &&
-        content->rendered_out_w == out_w &&
-        content->rendered_out_h == out_h)
+        content->rendered_w == render_w &&
+        content->rendered_h == render_h)
         return;
 
     PopplerPage *page = poppler_document_get_page(content->pdf_doc, content->page_index);
@@ -215,15 +231,8 @@ static void render_pdf_page(Content *content, SDL_Renderer *renderer, int out_w,
     if (page_w < 1.0) page_w = 1.0;
     if (page_h < 1.0) page_h = 1.0;
 
-    double scale_w = (double)out_w / page_w;
-    double scale_h = (double)out_h / page_h;
-    double scale = scale_w < scale_h ? scale_w : scale_h;
-    if (scale <= 0.0) scale = 1.0;
-
-    int render_w = (int)(page_w * scale + 0.5);
-    int render_h = (int)(page_h * scale + 0.5);
-    if (render_w < 1) render_w = 1;
-    if (render_h < 1) render_h = 1;
+    double scale_x = (double)render_w / page_w;
+    double scale_y = (double)render_h / page_h;
 
     cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
                                                           render_w, render_h);
@@ -231,7 +240,7 @@ static void render_pdf_page(Content *content, SDL_Renderer *renderer, int out_w,
 
     cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
     cairo_paint(cr);
-    cairo_scale(cr, scale, scale);
+    cairo_scale(cr, scale_x, scale_y);
     poppler_page_render(page, cr);
     cairo_destroy(cr);
     cairo_surface_flush(surface);
@@ -256,35 +265,36 @@ static void render_pdf_page(Content *content, SDL_Renderer *renderer, int out_w,
     if (!content->texture)
         die(SDL_GetError());
 
-    content->content_w = render_w;
-    content->content_h = render_h;
     content->rendered_page = content->page_index;
-    content->rendered_out_w = out_w;
-    content->rendered_out_h = out_h;
+    content->rendered_w = render_w;
+    content->rendered_h = render_h;
 }
 
-static void ensure_texture(Content *content, SDL_Renderer *renderer, int out_w, int out_h)
+static void ensure_texture(Content *content, SDL_Renderer *renderer, int display_w, int display_h)
 {
     if (content->kind == CONTENT_IMAGE) {
-        if (!content->texture)
-            create_image_texture(content, renderer);
+        create_image_texture(content, renderer);
         return;
     }
 
-    render_pdf_page(content, renderer, out_w, out_h);
+    render_pdf_page(content, renderer, display_w, display_h);
 }
 
-static bool change_pdf_page(Content *content, int delta)
+static bool set_pdf_page(Content *content, int new_index)
 {
     if (content->kind != CONTENT_PDF)
         return false;
-
-    int next = content->page_index + delta;
-    if (next < 0 || next >= content->page_count)
+    if (new_index < 0 || new_index >= content->page_count)
+        return false;
+    if (new_index == content->page_index)
         return false;
 
-    content->page_index = next;
+    content->page_index = new_index;
+    get_pdf_page_size(content->pdf_doc, content->page_index,
+                      &content->base_w, &content->base_h);
     content->rendered_page = -1;
+    content->rendered_w = -1;
+    content->rendered_h = -1;
     return true;
 }
 
@@ -314,18 +324,13 @@ int main(int argc, char **argv)
     if (max_w < 1) max_w = dm.w;
     if (max_h < 1) max_h = dm.h;
 
-    int natural_w = content.content_w;
-    int natural_h = content.content_h;
-    if (natural_w <= 0 || natural_h <= 0)
-        die("invalid dimensions");
+    double initial_scale_w = (double)max_w / (double)content.base_w;
+    double initial_scale_h = (double)max_h / (double)content.base_h;
+    double initial_scale = initial_scale_w < initial_scale_h ? initial_scale_w : initial_scale_h;
+    if (initial_scale > 1.0) initial_scale = 1.0;
 
-    double scale_w = (double)max_w / (double)natural_w;
-    double scale_h = (double)max_h / (double)natural_h;
-    double scale = scale_w < scale_h ? scale_w : scale_h;
-    if (scale > 1.0) scale = 1.0;
-
-    int win_w = (int)(natural_w * scale + 0.5);
-    int win_h = (int)(natural_h * scale + 0.5);
+    int win_w = (int)(content.base_w * initial_scale + 0.5);
+    int win_h = (int)(content.base_h * initial_scale + 0.5);
     if (win_w < 1) win_w = 1;
     if (win_h < 1) win_h = 1;
 
@@ -354,7 +359,14 @@ int main(int argc, char **argv)
             die(SDL_GetError());
     }
 
-    ensure_texture(&content, renderer, win_w, win_h);
+    double zoom = 1.0;
+    double pan_x = 0.0;
+    double pan_y = 0.0;
+    int display_w = win_w;
+    int display_h = win_h;
+    compute_display_size(&content, win_w, win_h, zoom, &display_w, &display_h);
+    ensure_texture(&content, renderer, display_w, display_h);
+
     SDL_ShowWindow(window);
 
     bool quit = false;
@@ -372,6 +384,7 @@ int main(int argc, char **argv)
                     break;
                 case SDLK_RETURN:
                 case SDLK_KP_ENTER:
+                case SDLK_f:
                     if (!fullscreen) {
                         if (SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP) == 0)
                             fullscreen = true;
@@ -383,29 +396,82 @@ int main(int argc, char **argv)
                                                   SDL_WINDOWPOS_CENTERED,
                                                   SDL_WINDOWPOS_CENTERED);
                             SDL_RaiseWindow(window);
-                            if (content.kind == CONTENT_PDF)
-                                content.rendered_page = -1;
                         }
                     }
                     break;
-                case SDLK_RIGHT:
-                case SDLK_l:
-                case SDLK_PAGEDOWN:
-                case SDLK_SPACE:
-                    if (change_pdf_page(&content, +1))
-                        update_window_title(window, &content, argv[1]);
+                case SDLK_EQUALS:
+                case SDLK_PLUS:
+                case SDLK_KP_PLUS: {
+                    int out_w, out_h;
+                    if (SDL_GetRendererOutputSize(renderer, &out_w, &out_h) < 0)
+                        die(SDL_GetError());
+                    int old_w, old_h;
+                    compute_display_size(&content, out_w, out_h, zoom, &old_w, &old_h);
+                    zoom *= 1.25;
+                    if (zoom > 64.0) zoom = 64.0;
+                    int new_w, new_h;
+                    compute_display_size(&content, out_w, out_h, zoom, &new_w, &new_h);
+                    if (old_w > 0) pan_x *= (double)new_w / (double)old_w;
+                    if (old_h > 0) pan_y *= (double)new_h / (double)old_h;
+                    clamp_pan(out_w, out_h, new_w, new_h, &pan_x, &pan_y);
                     break;
-                case SDLK_LEFT:
+                }
+                case SDLK_MINUS:
+                case SDLK_KP_MINUS: {
+                    int out_w, out_h;
+                    if (SDL_GetRendererOutputSize(renderer, &out_w, &out_h) < 0)
+                        die(SDL_GetError());
+                    int old_w, old_h;
+                    compute_display_size(&content, out_w, out_h, zoom, &old_w, &old_h);
+                    zoom /= 1.25;
+                    if (zoom < 0.1) zoom = 0.1;
+                    int new_w, new_h;
+                    compute_display_size(&content, out_w, out_h, zoom, &new_w, &new_h);
+                    if (old_w > 0) pan_x *= (double)new_w / (double)old_w;
+                    if (old_h > 0) pan_y *= (double)new_h / (double)old_h;
+                    clamp_pan(out_w, out_h, new_w, new_h, &pan_x, &pan_y);
+                    break;
+                }
                 case SDLK_h:
-                case SDLK_PAGEUP:
-                    if (change_pdf_page(&content, -1))
-                        update_window_title(window, &content, argv[1]);
+                    pan_x += 80.0;
+                    break;
+                case SDLK_l:
+                    if (ev.key.keysym.mod & KMOD_SHIFT) {
+                        break;
+                    }
+                    pan_x -= 80.0;
+                    break;
+                case SDLK_j:
+                    if ((ev.key.keysym.mod & KMOD_SHIFT) && content.kind == CONTENT_PDF) {
+                        if (set_pdf_page(&content, content.page_index + 1)) {
+                            pan_x = 0.0;
+                            pan_y = 0.0;
+                            update_window_title(window, &content, argv[1]);
+                        }
+                    } else {
+                        pan_y -= 80.0;
+                    }
+                    break;
+                case SDLK_k:
+                    if ((ev.key.keysym.mod & KMOD_SHIFT) && content.kind == CONTENT_PDF) {
+                        if (set_pdf_page(&content, content.page_index - 1)) {
+                            pan_x = 0.0;
+                            pan_y = 0.0;
+                            update_window_title(window, &content, argv[1]);
+                        }
+                    } else {
+                        pan_y += 80.0;
+                    }
                     break;
                 case SDLK_0:
+                    zoom = 1.0;
+                    pan_x = 0.0;
+                    pan_y = 0.0;
+                    break;
                 case SDLK_HOME:
-                    if (content.kind == CONTENT_PDF && content.page_index != 0) {
-                        content.page_index = 0;
-                        content.rendered_page = -1;
+                    if (content.kind == CONTENT_PDF && set_pdf_page(&content, 0)) {
+                        pan_x = 0.0;
+                        pan_y = 0.0;
                         update_window_title(window, &content, argv[1]);
                     }
                     break;
@@ -417,6 +483,8 @@ int main(int argc, char **argv)
                     (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
                      ev.window.event == SDL_WINDOWEVENT_RESIZED)) {
                     content.rendered_page = -1;
+                    content.rendered_w = -1;
+                    content.rendered_h = -1;
                 }
             }
         }
@@ -425,8 +493,16 @@ int main(int argc, char **argv)
         if (SDL_GetRendererOutputSize(renderer, &out_w, &out_h) < 0)
             die(SDL_GetError());
 
-        ensure_texture(&content, renderer, out_w, out_h);
-        SDL_Rect dst = fit_rect(content.content_w, content.content_h, out_w, out_h);
+        compute_display_size(&content, out_w, out_h, zoom, &display_w, &display_h);
+        clamp_pan(out_w, out_h, display_w, display_h, &pan_x, &pan_y);
+        ensure_texture(&content, renderer, display_w, display_h);
+
+        SDL_Rect dst = {
+            .x = (int)((double)(out_w - display_w) / 2.0 + pan_x + 0.5),
+            .y = (int)((double)(out_h - display_h) / 2.0 + pan_y + 0.5),
+            .w = display_w,
+            .h = display_h,
+        };
 
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         SDL_RenderClear(renderer);

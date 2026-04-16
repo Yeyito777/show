@@ -11,10 +11,14 @@ show <file>
 ## Controls
 
 - `Esc`: quit
-- `Enter`: toggle fullscreen
-- `Right` / `l` / `Space` / `PageDown`: next PDF page
-- `Left` / `h` / `PageUp`: previous PDF page
-- `0` / `Home`: first PDF page
+- `Enter` / `f`: toggle fullscreen
+- `=` / `+`: zoom in
+- `-`: zoom out
+- `0`: reset zoom and pan
+- `h` / `j` / `k` / `l`: scroll left / down / up / right
+- `Shift+j`: next PDF page
+- `Shift+k`: previous PDF page
+- `Home`: first PDF page
 
 ## Build
 
