@@ -6,6 +6,7 @@
 #include <SDL2/SDL_image.h>
 #include <SDL2/SDL_syswm.h>
 #include <X11/Xlib.h>
+#include <X11/Xutil.h>
 
 static void die(const char *msg)
 {
@@ -13,20 +14,18 @@ static void die(const char *msg)
     exit(1);
 }
 
-static void set_override_redirect(SDL_Window *window)
+static void set_wm_class(SDL_Window *window, const char *name)
 {
     SDL_SysWMinfo info;
     SDL_VERSION(&info.version);
     if (!SDL_GetWindowWMInfo(window, &info)) return;
     if (info.subsystem != SDL_SYSWM_X11) return;
 
-    Display *dpy = info.info.x11.display;
-    Window xw = info.info.x11.window;
-
-    XSetWindowAttributes attrs;
-    attrs.override_redirect = True;
-    XChangeWindowAttributes(dpy, xw, CWOverrideRedirect, &attrs);
-    XFlush(dpy);
+    XClassHint hint;
+    hint.res_name = (char *)name;
+    hint.res_class = (char *)name;
+    XSetClassHint(info.info.x11.display, info.info.x11.window, &hint);
+    XFlush(info.info.x11.display);
 }
 
 static SDL_Rect fit_rect(int src_w, int src_h, int dst_w, int dst_h)
@@ -91,8 +90,8 @@ int main(int argc, char **argv)
 
     SDL_Window *window = SDL_CreateWindow(
         "show",
-        SDL_WINDOWPOS_CENTERED,
-        SDL_WINDOWPOS_CENTERED,
+        SDL_WINDOWPOS_UNDEFINED,
+        SDL_WINDOWPOS_UNDEFINED,
         win_w,
         win_h,
         SDL_WINDOW_HIDDEN | SDL_WINDOW_BORDERLESS
@@ -100,9 +99,7 @@ int main(int argc, char **argv)
     if (!window)
         die(SDL_GetError());
 
-    set_override_redirect(window);
-    SDL_ShowWindow(window);
-    SDL_RaiseWindow(window);
+    set_wm_class(window, "show");
 
     SDL_Renderer *renderer = SDL_CreateRenderer(
         window,
@@ -121,12 +118,10 @@ int main(int argc, char **argv)
 
     SDL_FreeSurface(surface);
 
+    SDL_ShowWindow(window);
+
     bool quit = false;
     bool fullscreen = false;
-    int saved_x = SDL_WINDOWPOS_CENTERED;
-    int saved_y = SDL_WINDOWPOS_CENTERED;
-    int saved_w = win_w;
-    int saved_h = win_h;
 
     while (!quit) {
         SDL_Event ev;
@@ -141,23 +136,17 @@ int main(int argc, char **argv)
                 case SDLK_RETURN:
                 case SDLK_KP_ENTER:
                     if (!fullscreen) {
-                        SDL_GetWindowPosition(window, &saved_x, &saved_y);
-                        SDL_GetWindowSize(window, &saved_w, &saved_h);
-
-                        SDL_Rect bounds;
-                        if (SDL_GetDisplayBounds(0, &bounds) == 0) {
-                            SDL_SetWindowPosition(window, bounds.x, bounds.y);
-                            SDL_SetWindowSize(window, bounds.w, bounds.h);
-                            set_override_redirect(window);
-                            SDL_RaiseWindow(window);
+                        if (SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP) == 0)
                             fullscreen = true;
-                        }
                     } else {
-                        SDL_SetWindowSize(window, saved_w, saved_h);
-                        SDL_SetWindowPosition(window, saved_x, saved_y);
-                        set_override_redirect(window);
-                        SDL_RaiseWindow(window);
-                        fullscreen = false;
+                        if (SDL_SetWindowFullscreen(window, 0) == 0) {
+                            fullscreen = false;
+                            SDL_SetWindowSize(window, win_w, win_h);
+                            SDL_SetWindowPosition(window,
+                                                  SDL_WINDOWPOS_CENTERED,
+                                                  SDL_WINDOWPOS_CENTERED);
+                            SDL_RaiseWindow(window);
+                        }
                     }
                     break;
                 default:
