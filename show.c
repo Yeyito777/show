@@ -36,6 +36,9 @@ typedef struct {
     int rendered_rotation;
 } Content;
 
+static const double ZOOM_STEP = 1.118033988749895;
+static const double FINE_ZOOM_STEP = 1.057371263440564;
+
 static void die(const char *msg)
 {
     fprintf(stderr, "show: %s\n", msg);
@@ -511,12 +514,16 @@ int main(int argc, char **argv)
                     int out_w, out_h;
                     int old_w, old_h;
                     int new_w, new_h;
+                    double factor = ((ev.key.keysym.sym == SDLK_KP_PLUS) ||
+                                     !(ev.key.keysym.mod & KMOD_SHIFT))
+                                        ? ZOOM_STEP
+                                        : FINE_ZOOM_STEP;
 
                     if (SDL_GetRendererOutputSize(renderer, &out_w, &out_h) < 0)
                         die(SDL_GetError());
 
                     compute_display_size(&content, out_w, out_h, zoom, rotation, &old_w, &old_h);
-                    zoom *= 1.25;
+                    zoom *= factor;
                     if (zoom > 64.0) zoom = 64.0;
                     compute_display_size(&content, out_w, out_h, zoom, rotation, &new_w, &new_h);
                     if (old_w > 0) pan_x *= (double)new_w / (double)old_w;
@@ -529,12 +536,16 @@ int main(int argc, char **argv)
                     int out_w, out_h;
                     int old_w, old_h;
                     int new_w, new_h;
+                    double factor = ((ev.key.keysym.sym == SDLK_MINUS) &&
+                                     (ev.key.keysym.mod & KMOD_SHIFT))
+                                        ? FINE_ZOOM_STEP
+                                        : ZOOM_STEP;
 
                     if (SDL_GetRendererOutputSize(renderer, &out_w, &out_h) < 0)
                         die(SDL_GetError());
 
                     compute_display_size(&content, out_w, out_h, zoom, rotation, &old_w, &old_h);
-                    zoom /= 1.25;
+                    zoom /= factor;
                     if (zoom < 0.1) zoom = 0.1;
                     compute_display_size(&content, out_w, out_h, zoom, rotation, &new_w, &new_h);
                     if (old_w > 0) pan_x *= (double)new_w / (double)old_w;
