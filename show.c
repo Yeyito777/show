@@ -554,11 +554,26 @@ int main(int argc, char **argv)
                     break;
                 }
                 case SDLK_h:
-                    pan_x += 80.0;
+                    if ((ev.key.keysym.mod & KMOD_SHIFT) && content.kind == CONTENT_PDF) {
+                        if (set_pdf_page(&content, content.page_index - 1)) {
+                            pan_x = 0.0;
+                            pan_y = 0.0;
+                            update_window_title(window, &content, argv[1]);
+                        }
+                    } else {
+                        pan_x += 80.0;
+                    }
                     break;
                 case SDLK_l:
-                    if (!(ev.key.keysym.mod & KMOD_SHIFT))
+                    if ((ev.key.keysym.mod & KMOD_SHIFT) && content.kind == CONTENT_PDF) {
+                        if (set_pdf_page(&content, content.page_index + 1)) {
+                            pan_x = 0.0;
+                            pan_y = 0.0;
+                            update_window_title(window, &content, argv[1]);
+                        }
+                    } else {
                         pan_x -= 80.0;
+                    }
                     break;
                 case SDLK_j:
                     if ((ev.key.keysym.mod & KMOD_SHIFT) && content.kind == CONTENT_PDF) {

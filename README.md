@@ -18,8 +18,8 @@ show <file>
 - `h` / `j` / `k` / `l`: scroll left / down / up / right
 - `r`: rotate clockwise 90°
 - `Shift+r`: rotate counterclockwise 90°
-- `Shift+j`: next PDF page
-- `Shift+k`: previous PDF page
+- `Shift+j` / `Shift+l`: next PDF page
+- `Shift+k` / `Shift+h`: previous PDF page
 - `Home`: first PDF page
 
 ## Build
