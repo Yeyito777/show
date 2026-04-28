@@ -272,25 +272,63 @@ static SDL_Surface *rotate_surface(SDL_Surface *src, int rotation)
     return dst;
 }
 
-static void ensure_image_texture(Content *content, SDL_Renderer *renderer, int rotation)
+static void ensure_image_texture(Content *content,
+                                 SDL_Renderer *renderer,
+                                 int rotation,
+                                 int display_w,
+                                 int display_h)
 {
     rotation = ((rotation % 4) + 4) % 4;
-    if (content->texture && content->rendered_rotation == rotation)
+
+    int source_w = (rotation % 2 == 0) ? content->image_surface->w : content->image_surface->h;
+    int source_h = (rotation % 2 == 0) ? content->image_surface->h : content->image_surface->w;
+    bool downscale = display_w < source_w || display_h < source_h;
+    int texture_w = downscale ? display_w : source_w;
+    int texture_h = downscale ? display_h : source_h;
+
+    if (content->texture &&
+        content->rendered_rotation == rotation &&
+        content->rendered_w == texture_w &&
+        content->rendered_h == texture_h)
         return;
 
     invalidate_texture(content);
 
-    if (rotation == 0) {
-        content->texture = SDL_CreateTextureFromSurface(renderer, content->image_surface);
-    } else {
-        SDL_Surface *rotated = rotate_surface(content->image_surface, rotation);
-        content->texture = SDL_CreateTextureFromSurface(renderer, rotated);
-        SDL_FreeSurface(rotated);
+    SDL_Surface *source = content->image_surface;
+    SDL_Surface *rotated = NULL;
+    if (rotation != 0) {
+        rotated = rotate_surface(content->image_surface, rotation);
+        source = rotated;
     }
+
+    if (downscale) {
+        SDL_Surface *scaled = SDL_CreateRGBSurfaceWithFormat(0,
+                                                             texture_w,
+                                                             texture_h,
+                                                             32,
+                                                             SDL_PIXELFORMAT_RGBA32);
+        if (!scaled)
+            die(SDL_GetError());
+
+        SDL_Rect dst = { .x = 0, .y = 0, .w = texture_w, .h = texture_h };
+        SDL_SetSurfaceBlendMode(source, SDL_BLENDMODE_NONE);
+        if (SDL_BlitScaled(source, NULL, scaled, &dst) < 0)
+            die(SDL_GetError());
+
+        content->texture = SDL_CreateTextureFromSurface(renderer, scaled);
+        SDL_FreeSurface(scaled);
+    } else {
+        content->texture = SDL_CreateTextureFromSurface(renderer, source);
+    }
+
+    if (rotated)
+        SDL_FreeSurface(rotated);
 
     if (!content->texture)
         die(SDL_GetError());
 
+    content->rendered_w = texture_w;
+    content->rendered_h = texture_h;
     content->rendered_rotation = rotation;
 }
 
@@ -383,7 +421,7 @@ static void ensure_texture(Content *content,
                            int display_h)
 {
     if (content->kind == CONTENT_IMAGE) {
-        ensure_image_texture(content, renderer, rotation);
+        ensure_image_texture(content, renderer, rotation, display_w, display_h);
         return;
     }
 
