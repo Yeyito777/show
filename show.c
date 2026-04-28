@@ -4,6 +4,7 @@
 #include <string.h>
 #include <strings.h>
 #include <limits.h>
+#include <stdint.h>
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
@@ -272,6 +273,83 @@ static SDL_Surface *rotate_surface(SDL_Surface *src, int rotation)
     return dst;
 }
 
+static SDL_Texture *create_scaled_image_texture(SDL_Renderer *renderer,
+                                                SDL_Surface *source,
+                                                int width,
+                                                int height)
+{
+    cairo_surface_t *src = cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
+                                                      source->w,
+                                                      source->h);
+    if (cairo_surface_status(src) != CAIRO_STATUS_SUCCESS)
+        die("cannot create cairo source surface");
+
+    SDL_LockSurface(source);
+    unsigned char *src_data = cairo_image_surface_get_data(src);
+    int src_stride = cairo_image_surface_get_stride(src);
+
+    for (int y = 0; y < source->h; y++) {
+        unsigned char *in = (unsigned char *)source->pixels + y * source->pitch;
+        uint32_t *out = (uint32_t *)(src_data + y * src_stride);
+
+        for (int x = 0; x < source->w; x++) {
+            unsigned char r = in[x * 4 + 0];
+            unsigned char g = in[x * 4 + 1];
+            unsigned char b = in[x * 4 + 2];
+            unsigned char a = in[x * 4 + 3];
+
+            r = (unsigned char)(((int)r * (int)a + 127) / 255);
+            g = (unsigned char)(((int)g * (int)a + 127) / 255);
+            b = (unsigned char)(((int)b * (int)a + 127) / 255);
+
+            out[x] = ((uint32_t)a << 24) |
+                     ((uint32_t)r << 16) |
+                     ((uint32_t)g << 8) |
+                     (uint32_t)b;
+        }
+    }
+
+    SDL_UnlockSurface(source);
+    cairo_surface_mark_dirty(src);
+
+    cairo_surface_t *dst = cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
+                                                      width,
+                                                      height);
+    if (cairo_surface_status(dst) != CAIRO_STATUS_SUCCESS)
+        die("cannot create cairo scaled surface");
+
+    cairo_t *cr = cairo_create(dst);
+    cairo_scale(cr,
+                (double)width / (double)source->w,
+                (double)height / (double)source->h);
+
+    cairo_pattern_t *pattern = cairo_pattern_create_for_surface(src);
+    cairo_pattern_set_filter(pattern, CAIRO_FILTER_BEST);
+    cairo_set_source(cr, pattern);
+    cairo_paint(cr);
+    cairo_pattern_destroy(pattern);
+    cairo_destroy(cr);
+    cairo_surface_flush(dst);
+
+    SDL_Surface *sdl_surface = SDL_CreateRGBSurfaceWithFormatFrom(
+        cairo_image_surface_get_data(dst),
+        width,
+        height,
+        32,
+        cairo_image_surface_get_stride(dst),
+        SDL_PIXELFORMAT_BGRA32
+    );
+    if (!sdl_surface)
+        die(SDL_GetError());
+
+    SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, sdl_surface);
+    SDL_FreeSurface(sdl_surface);
+    cairo_surface_destroy(dst);
+    cairo_surface_destroy(src);
+
+    return texture;
+}
+
 static void ensure_image_texture(Content *content,
                                  SDL_Renderer *renderer,
                                  int rotation,
@@ -302,21 +380,10 @@ static void ensure_image_texture(Content *content,
     }
 
     if (downscale) {
-        SDL_Surface *scaled = SDL_CreateRGBSurfaceWithFormat(0,
-                                                             texture_w,
-                                                             texture_h,
-                                                             32,
-                                                             SDL_PIXELFORMAT_RGBA32);
-        if (!scaled)
-            die(SDL_GetError());
-
-        SDL_Rect dst = { .x = 0, .y = 0, .w = texture_w, .h = texture_h };
-        SDL_SetSurfaceBlendMode(source, SDL_BLENDMODE_NONE);
-        if (SDL_BlitScaled(source, NULL, scaled, &dst) < 0)
-            die(SDL_GetError());
-
-        content->texture = SDL_CreateTextureFromSurface(renderer, scaled);
-        SDL_FreeSurface(scaled);
+        content->texture = create_scaled_image_texture(renderer,
+                                                       source,
+                                                       texture_w,
+                                                       texture_h);
     } else {
         content->texture = SDL_CreateTextureFromSurface(renderer, source);
     }
